@@ -1,7 +1,7 @@
 import os
 import pickle
 import string
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 from nltk.stem import PorterStemmer
 
@@ -17,8 +17,10 @@ class InvertedIndex:
     def __init__(self) -> None:
         self.index = defaultdict(set) #basically this maps a token to a list of doc ids
         self.docmap: dict[int, dict] = {} # this maps doc id to the movie
+        self.term_frequencies = defaultdict(Counter) # this maps doc id to a dict where key is token and values is its count in that doc
         self.index_path = os.path.join(CACHE_DIR, "index.pkl")
         self.docmap_path = os.path.join(CACHE_DIR, "docmap.pkl")
+        self.tf_path = os.path.join(CACHE_DIR, "term_frequencies.pkl")
 
     def build(self) -> None:
         movies = load_movies()
@@ -34,6 +36,16 @@ class InvertedIndex:
             pickle.dump(self.index, f)
         with open(self.docmap_path, "wb") as f:
             pickle.dump(self.docmap, f)
+        with open(self.tf_path, "wb") as f:
+            pickle.dump(self.term_frequencies, f)
+            
+    def load(self) -> None:
+        with open(self.index_path, "rb") as f:
+            self.index = pickle.load(f)
+        with open(self.docmap_path, "rb") as f:
+            self.docmap = pickle.load(f)
+        with open(self.tf_path, "rb") as f:
+            self.term_frequencies = pickle.load(f)
 
     def get_documents(self, term: str) -> list[int]:
         doc_ids = self.index.get(term, set())
@@ -43,26 +55,33 @@ class InvertedIndex:
         tokens = tokenize_text(text)
         for token in set(tokens):
             self.index[token].add(doc_id)
+        self.term_frequencies[doc_id].update(tokens)
+
+    def get_tf(self, doc_id: int, term: str) -> int:
+        return self.term_frequencies[doc_id][term]
 
 
 def build_command() -> None:
     idx = InvertedIndex()
     idx.build()
     idx.save()
-    docs = idx.get_documents("merida")
-    print(f"First document for token 'merida' = {docs[0]}")
-
 
 def search_command(query: str, limit: int = DEFAULT_SEARCH_LIMIT) -> list[dict]:
-    movies = load_movies()
-    results = []
-    for movie in movies:
-        query_tokens = tokenize_text(query)
-        title_tokens = tokenize_text(movie["title"])
-        if has_matching_token(query_tokens, title_tokens):
-            results.append(movie)
+    idx = InvertedIndex()
+    idx.load()
+    query_tokens = tokenize_text(query)
+    seen, results = set(), []
+    for query_token in query_tokens:
+        matching_doc_ids = idx.get_documents(query_token)
+        for doc_id in matching_doc_ids:
+            if doc_id in seen:
+                continue
+            seen.add(doc_id)
+            doc = idx.docmap[doc_id]
+            results.append(doc)
             if len(results) >= limit:
-                break
+                return results
+
     return results
 
 
@@ -104,3 +123,16 @@ def tokenize_text(text: str) -> list[str]:
     for word in filtered_words:
         stemmed_words.append(stemmer.stem(word))
     return stemmed_words
+
+
+def tokenize_single_term(term: str) -> str:
+    tokens = tokenize_text(term)
+    if len(tokens) != 1:
+        raise ValueError("term must be a single token")
+    return tokens[0]
+
+
+def tf_command(doc_id: int, term: str) -> int:
+    idx = InvertedIndex()
+    idx.load()
+    return idx.get_tf(doc_id, tokenize_single_term(term))
